@@ -1,35 +1,29 @@
 module [
     Token,
-    Error,
-    Position,
     tokenize,
+    toStr,
 ]
 
-Position : {
-    row : U32,
-    column : U32,
-}
+import Common
+
 TokenTag : [LParen, RParen, Name Str, Number U32, String Str, Variable Str]
 Token : {
-    position : Position,
+    position : Common.Position,
     token : TokenTag,
 }
 CurrentToken : {
-    position : Position,
+    position : Common.Position,
     token : [None, Name (List U8), Number (List U8), String (List U8), Variable (List U8)],
 }
-Error : {
-    message : Str,
-    position : Position,
-}
+
 TokenizerState : {
     currentToken : CurrentToken,
-    currentPosition : Position,
+    currentPosition : Common.Position,
     tokens : List Token,
-    errors : List Error,
+    errors : List Common.Error,
 }
 
-tokenize : Str -> Result (List Token) (List Error)
+tokenize : Str -> Result (List Token) (List Common.Error)
 tokenize = \input ->
     finalState = Str.walkUtf8
         input
@@ -330,6 +324,16 @@ validNameBytes =
         )
 
 whitespaceBytes = Set.fromList [9u8, 10u8, 13u8, 32u8]
+
+toStr : Token -> Str
+toStr = \token ->
+    when token.token is
+        LParen -> "("
+        RParen -> ")"
+        Name name -> "Name $(name)"
+        Number number -> "Number $(number |> Num.toStr)"
+        String string -> "String $(string)"
+        Variable variable -> "Variable $(variable)"
 
 expect
     tokens = tokenize "(module)"

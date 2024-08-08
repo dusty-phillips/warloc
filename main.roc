@@ -10,17 +10,15 @@ import pf.Stderr
 
 import Tokenizer
 import Parser
+import Common
 
-compile : Str -> Result (List U8) [TokenizeError (List Tokenizer.Error), ParseError (List Parser.Error)]
+compile : Str -> Result (List U8) (List Common.Error)
 compile = \input ->
     input
     |> Tokenizer.tokenize
-    |> Result.mapErr TokenizeError
-    |> Result.try \tokens ->
-        tokens
-        |> Parser.parse
+    |> Result.try Parser.parse
     |> Result.map \expression ->
-        dbg expression
+        # dbg expression
 
         Str.toUtf8 "TODO: Compile Input"
 
@@ -35,18 +33,6 @@ writeWithWasmExtension = \bytes, inputFilename ->
     outputPath
     |> Path.writeBytes bytes
     |> Task.mapErr \_ -> Exit 5 "Unable to write $(outputPath |> Path.display)"
-
-formatErrors : List { message : Str, position : { row : U32, column : U32 } } -> Str
-formatErrors = \errors ->
-    Str.joinWith
-        (
-            errors
-            |> List.map \error ->
-                row = error.position.row |> Num.toStr
-                column = error.position.column |> Num.toStr
-                "$(row):$(column) $(error.message)"
-        )
-        "\n"
 
 main : Task.Task {} [Exit I32 Str]
 main =
@@ -73,9 +59,9 @@ main =
 
             when compileResult is
                 Ok compiledBytes -> writeWithWasmExtension compiledBytes filename
-                Err (TokenizeError errors) | Err (ParseError errors) ->
+                Err errors ->
                     errors
-                    |> formatErrors
+                    |> Common.formatErrors
                     |> Stderr.line
                     |> Task.mapErr \_ -> Exit 99 "System is failing"
 
