@@ -18,7 +18,7 @@ compile = \input ->
     |> Tokenizer.tokenize
     |> Result.try Parser.parse
     |> Result.map \expression ->
-        # dbg expression
+        dbg expression
 
         Str.toUtf8 "TODO: Compile Input"
 

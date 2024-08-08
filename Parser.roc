@@ -14,6 +14,7 @@ Expression : [
         {
             name : Str,
             children : List Expression,
+            state : [Open, Closed],
         },
 ]
 
@@ -39,8 +40,11 @@ parse = \tokens ->
     # dbg parseResult
 
     when parseResult is
-        { errors: [], openNodeStack: [{ expression: SExpression sExpression, position }] } ->
+        { errors: [], openNodeStack: [{ expression: (SExpression sExpression), position }] }  if sExpression.state == Closed ->
             Ok { expression: SExpression sExpression, position }
+
+        { errors: [], openNodeStack: [{ expression: (SExpression sExpression), position }] }  if sExpression.state == Open ->
+            Err [{position, message: "Incomplete expression, no closing ')'"}]
 
         { errors: [], openNodeStack: [{ expression: Term _, position }] } ->
             Err [{ position, message: "Expected initial module expression, received a term" }]
@@ -65,13 +69,36 @@ parseRecursive = \tokens, currentState ->
                     { currentState &
                         openNodeStack: List.append currentNodeStack {
                             position,
-                            expression: SExpression ({ name, children: [] }),
+                            expression: SExpression ({ name, children: [], state: Open }),
                         },
                     },
                 )
 
-            ([{ token: RParen }, .. as rest], [_singleRootNode]) ->
-                (rest, currentState)
+            ([{ token: LParen }, { token, position}, .. as rest], _) ->
+                message = "Expected Name, found '$({token, position} |> Tokenizer.toStr)'"
+                (
+                    List.prepend rest {token, position},
+                    { currentState &
+                        errors: List.append currentState.errors {position, message}
+                    },
+                )
+
+            ([{ token: RParen }, .. as rest], [{ position, expression: SExpression { name, children, state: Open } }]) ->
+                (
+                    rest,
+                    { currentState &
+                        openNodeStack: [{ position, expression: SExpression { name, children, state: Closed } }],
+                    },
+                )
+
+            ([{ token: RParen, position }, .. as rest], [.., { expression: SExpression { state: Closed } }]) ->
+                message = "Unmatched ')'"
+                (
+                    rest,
+                    { currentState &
+                        errors: List.append currentState.errors { position, message },
+                    },
+                )
 
             ([{ position, token: RParen }, .. as rest], []) ->
                 message = "Unmatched ')'"
@@ -82,7 +109,7 @@ parseRecursive = \tokens, currentState ->
                     },
                 )
 
-            ([], _) -> crash "Empty tokens should never recurse"
+            ([], _) -> ([], {openNodeStack: [], errors: [{position: {row: 0, column: 0}, message: "No tokens provided"}]})
             ([token, .. as rest], _) ->
                 message = "Unexpected Token $(token |> Tokenizer.toStr)"
                 (
@@ -110,8 +137,57 @@ expect
     result
     == Ok {
         position: { row: 1, column: 1 },
-        expression: SExpression { name: "module", children: [] },
+        expression: SExpression {
+            name: "module",
+            children: [],
+            state: Closed,
+        },
     }
+
+expect
+    tokens = []
+
+    result = parse tokens
+
+    result
+    == Err [
+        {
+            position: { row: 0, column: 0 },
+            message: "No tokens provided",
+        },
+    ]
+
+expect
+    # ()
+    tokens = [
+        { position: { row: 1, column: 1 }, token: LParen },
+        { position: { row: 1, column: 2 }, token: RParen },
+    ]
+
+    result = parse tokens
+
+    result
+    == Err [
+        { position: { row: 1, column: 2 }, message: "Expected Name, found ')'", },
+        { position: { row: 1, column: 2 }, message: "Unmatched ')'", }
+    ]
+
+expect
+    # (10)
+    tokens = [
+        { position: { row: 1, column: 1 }, token: LParen },
+        { position: { row: 1, column: 2 }, token: Number 10 },
+        { position: { row: 1, column: 4 }, token: RParen },
+    ]
+
+    result = parse tokens
+
+    result
+    == Err [
+        {message: "Expected Name, found 'Number 10'", position: {column: 2, row: 1}},
+        {message: "Unexpected Token Number 10", position: {column: 2, row: 1}},
+        {message: "Unmatched ')'", position: {column: 4, row: 1}}
+    ]
 
 expect
     # )
@@ -163,7 +239,8 @@ expect
     result
     == Err [
         {
-            position: { row: 1, column: 9 },
+            position: { row: 1, column: 1 },
             message: "Incomplete expression, no closing ')'",
         },
     ]
+    
