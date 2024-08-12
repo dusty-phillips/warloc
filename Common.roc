@@ -1,9 +1,15 @@
-module [Position, Error, formatErrors]
+module [Position, Positionable, Error, formatErrors]
 
 Position : {
     row : U32,
     column : U32,
 }
+
+Positionable elem : {
+    position : Position,
+    element : elem,
+}
+
 Error : {
     message : Str,
     position : Position,

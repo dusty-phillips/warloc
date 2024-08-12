@@ -1,7 +1,6 @@
 module [
     parse,
     Expression,
-    Node,
 ]
 
 import Common
@@ -9,22 +8,22 @@ import Tokenizer
 
 Term : [Number U32, String Str, Name Str, Variable Str]
 Expression : [
-    Term Term,
+    Term
+        {
+            position : Common.Position,
+            term : Term,
+        },
     SExpression
         {
+            position : Common.Position,
             name : Str,
             children : List Expression,
             state : [Open, Closed],
         },
 ]
 
-Node : {
-    expression : Expression,
-    position : Common.Position,
-}
-
 ParseState : {
-    openNodeStack : List Node,
+    openNodeStack : List Expression,
     errors : List Common.Error,
 }
 
@@ -34,26 +33,46 @@ initialParseState = {
     errors: [],
 }
 
-parse : List Tokenizer.Token -> Result Node (List Common.Error)
+parse : List Tokenizer.Token -> Result Expression (List Common.Error)
 parse = \tokens ->
     parseResult = parseRecursive tokens initialParseState
     # dbg parseResult
 
     when parseResult is
-        { errors: [], openNodeStack: [{ expression: (SExpression sExpression), position }] }  if sExpression.state == Closed ->
-            Ok { expression: SExpression sExpression, position }
+        { errors: [], openNodeStack: [SExpression { name, position, children, state: Closed }] } ->
+            Ok (SExpression { name, position, children, state: Closed })
 
-        { errors: [], openNodeStack: [{ expression: (SExpression sExpression), position }] }  if sExpression.state == Open ->
-            Err [{position, message: "Incomplete expression, no closing ')'"}]
+        { errors: [], openNodeStack: [SExpression { position, state: Open }] } ->
+            Err [
+                {
+                    position,
+                    message: "Incomplete expression, no closing ')'",
+                },
+            ]
 
-        { errors: [], openNodeStack: [{ expression: Term _, position }] } ->
-            Err [{ position, message: "Expected initial module expression, received a term" }]
+        { errors: [], openNodeStack: [Term { position }] } ->
+            Err [
+                {
+                    position,
+                    message: "Expected initial module expression, received a term",
+                },
+            ]
 
         { errors: [], openNodeStack: [] } ->
-            Err [{ position: { row: 1, column: 1 }, message: "Missing module expression" }]
+            Err [
+                {
+                    position: { row: 1, column: 1 },
+                    message: "Missing module expression",
+                },
+            ]
 
         { errors: [], openNodeStack: [..] } ->
-            Err [{ position: { row: 1, column: 1 }, message: "Too many expressions" }]
+            Err [
+                {
+                    position: { row: 1, column: 1 },
+                    message: "Too many expressions",
+                },
+            ]
 
         { errors, openNodeStack: [..] } -> Err errors
 
@@ -67,31 +86,135 @@ parseRecursive = \tokens, currentState ->
                 (
                     rest,
                     { currentState &
-                        openNodeStack: List.append currentNodeStack {
-                            position,
-                            expression: SExpression ({ name, children: [], state: Open }),
-                        },
+                        openNodeStack: List.append
+                            currentNodeStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: [],
+                                    state: Open,
+                                }
+                            ),
                     },
                 )
 
-            ([{ token: LParen }, { token, position}, .. as rest], _) ->
-                message = "Expected Name, found '$({token, position} |> Tokenizer.toStr)'"
+            ([{ token: LParen }, { token, position }, .. as rest], _) ->
+                message = "Expected Name, found '$({ token, position } |> Tokenizer.toStr)'"
                 (
-                    List.prepend rest {token, position},
+                    List.prepend rest { token, position },
                     { currentState &
-                        errors: List.append currentState.errors {position, message}
+                        errors: List.append currentState.errors { position, message },
                     },
                 )
 
-            ([{ token: RParen }, .. as rest], [{ position, expression: SExpression { name, children, state: Open } }]) ->
+            # Due to some oddness in roc, this pattern has to go before the term patterns below it.
+            ([{ token: RParen }, .. as remainingTokens], [.. as headOfStack, SExpression { position, name, children, state: Open }, SExpression { position: childPosition, name: childName, children: childChildren, state: Open }]) ->
+                (
+                    remainingTokens,
+                    { currentState &
+                        openNodeStack: List.append
+                            headOfStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: List.append
+                                        children
+                                        (
+                                            SExpression {
+                                                position: childPosition,
+                                                name: childName,
+                                                children: childChildren,
+                                                state: Closed,
+                                            }
+                                        ),
+                                    state: Open,
+                                }
+                            ),
+                    },
+                )
+
+            # Would be nice if these next four cases could be merged into one
+            # case that was somehow generic over the token type
+            ([{ position: termPosition, token: Number number }, .. as remainingTokens], [.. as headOfStack, SExpression { position, name, children, state: Open }]) ->
+                (
+                    remainingTokens,
+                    { currentState &
+                        openNodeStack: List.append
+                            headOfStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: List.append children (Term { position: termPosition, term: Number number }),
+                                    state: Open,
+                                }
+                            ),
+                    },
+                )
+
+            ([{ position: termPosition, token: String string }, .. as remainingTokens], [.. as headOfStack, SExpression { position, name, children, state: Open }]) ->
+                (
+                    remainingTokens,
+                    { currentState &
+                        openNodeStack: List.append
+                            headOfStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: List.append children (Term { position: termPosition, term: String string }),
+                                    state: Open,
+                                }
+                            ),
+                    },
+                )
+
+            ([{ position: termPosition, token: Variable string }, .. as remainingTokens], [.. as headOfStack, SExpression { position, name, children, state: Open }]) ->
+                (
+                    remainingTokens,
+                    { currentState &
+                        openNodeStack: List.append
+                            headOfStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: List.append children (Term { position: termPosition, term: Variable string }),
+                                    state: Open,
+                                }
+                            ),
+                    },
+                )
+
+            ([{ position: termPosition, token: Name tokenName }, .. as remainingTokens], [.. as headOfStack, SExpression { position, name, children, state: Open }]) ->
+                (
+                    remainingTokens,
+                    { currentState &
+                        openNodeStack: List.append
+                            headOfStack
+                            (
+                                SExpression {
+                                    position,
+                                    name,
+                                    children: List.append children (Term { position: termPosition, term: Name tokenName }),
+                                    state: Open,
+                                }
+                            ),
+                    },
+                )
+
+            # end copy paste distater
+            ([{ token: RParen }, .. as rest], [SExpression { position, name, children, state: Open }]) ->
                 (
                     rest,
                     { currentState &
-                        openNodeStack: [{ position, expression: SExpression { name, children, state: Closed } }],
+                        openNodeStack: [SExpression { position, name, children, state: Closed }],
                     },
                 )
 
-            ([{ token: RParen, position }, .. as rest], [.., { expression: SExpression { state: Closed } }]) ->
+            ([{ token: RParen, position }, .. as rest], [.., SExpression { state: Closed }]) ->
                 message = "Unmatched ')'"
                 (
                     rest,
@@ -109,7 +232,7 @@ parseRecursive = \tokens, currentState ->
                     },
                 )
 
-            ([], _) -> ([], {openNodeStack: [], errors: [{position: {row: 0, column: 0}, message: "No tokens provided"}]})
+            ([], _) -> ([], { openNodeStack: [], errors: [{ position: { row: 0, column: 0 }, message: "No tokens provided" }] })
             ([token, .. as rest], _) ->
                 message = "Unexpected Token $(token |> Tokenizer.toStr)"
                 (
@@ -131,18 +254,50 @@ expect
         { position: { row: 1, column: 8 }, token: RParen },
     ]
 
-    result : Result Node (List Common.Error)
     result = parse tokens
 
     result
-    == Ok {
-        position: { row: 1, column: 1 },
-        expression: SExpression {
-            name: "module",
-            children: [],
-            state: Closed,
-        },
-    }
+    == Ok
+        (
+            SExpression {
+                name: "module",
+                position: { row: 1, column: 1 },
+                children: [],
+                state: Closed,
+            }
+        )
+
+expect
+    # (module (memory 10))
+    tokens = [
+        { position: { row: 1, column: 1 }, token: LParen },
+        { position: { row: 1, column: 2 }, token: Name "module" },
+        { position: { row: 1, column: 9 }, token: LParen },
+        { position: { row: 1, column: 10 }, token: Name "memory" },
+        { position: { row: 1, column: 17 }, token: Number 10 },
+        { position: { row: 1, column: 19 }, token: RParen },
+        { position: { row: 1, column: 20 }, token: RParen },
+    ]
+
+    result = parse tokens
+
+    result
+    == Ok
+        (
+            SExpression {
+                position: { column: 1, row: 1 },
+                name: "module",
+                state: Closed,
+                children: [
+                    SExpression {
+                        position: { column: 9, row: 1 },
+                        name: "memory",
+                        state: Closed,
+                        children: [Term { position: { column: 17, row: 1 }, term: Number 10 }],
+                    },
+                ],
+            }
+        )
 
 expect
     tokens = []
@@ -168,8 +323,8 @@ expect
 
     result
     == Err [
-        { position: { row: 1, column: 2 }, message: "Expected Name, found ')'", },
-        { position: { row: 1, column: 2 }, message: "Unmatched ')'", }
+        { position: { row: 1, column: 2 }, message: "Expected Name, found ')'" },
+        { position: { row: 1, column: 2 }, message: "Unmatched ')'" },
     ]
 
 expect
@@ -184,9 +339,9 @@ expect
 
     result
     == Err [
-        {message: "Expected Name, found 'Number 10'", position: {column: 2, row: 1}},
-        {message: "Unexpected Token Number 10", position: {column: 2, row: 1}},
-        {message: "Unmatched ')'", position: {column: 4, row: 1}}
+        { message: "Expected Name, found 'Number 10'", position: { column: 2, row: 1 } },
+        { message: "Unexpected Token Number 10", position: { column: 2, row: 1 } },
+        { message: "Unmatched ')'", position: { column: 4, row: 1 } },
     ]
 
 expect
@@ -195,7 +350,6 @@ expect
         { position: { row: 1, column: 1 }, token: RParen },
     ]
 
-    result : Result Node (List Common.Error)
     result = parse tokens
 
     result
@@ -215,7 +369,6 @@ expect
         { position: { row: 1, column: 9 }, token: RParen },
     ]
 
-    result : Result Node (List Common.Error)
     result = parse tokens
 
     result
@@ -233,7 +386,6 @@ expect
         { position: { row: 1, column: 2 }, token: Name "module" },
     ]
 
-    result : Result Node (List Common.Error)
     result = parse tokens
 
     result
@@ -243,4 +395,4 @@ expect
             message: "Incomplete expression, no closing ')'",
         },
     ]
-    
+

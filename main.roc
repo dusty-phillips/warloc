@@ -10,6 +10,7 @@ import pf.Stderr
 
 import Tokenizer
 import Parser
+import Transformer
 import Common
 
 compile : Str -> Result (List U8) (List Common.Error)
@@ -17,8 +18,9 @@ compile = \input ->
     input
     |> Tokenizer.tokenize
     |> Result.try Parser.parse
-    |> Result.map \expression ->
-        dbg expression
+    |> Result.try Transformer.transform
+    |> Result.map \ast ->
+        # dbg expression
 
         Str.toUtf8 "TODO: Compile Input"
 
