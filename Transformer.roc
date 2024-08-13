@@ -60,11 +60,54 @@ transform = \expression ->
 transformModule : Transformer Module
 transformModule = \children ->
     List.walk children (Ok emptyModule) \currentResult, child ->
-        currentResult
+        when child is
+            SExpression { position, name: "memory", children: [] } ->
+                mergeError currentResult { position, message: "Invalid memory: min limit required" }
+
+            SExpression { position, name: "memory", children: expressions } ->
+                mergeResult currentResult (transformMem expressions) \module, mem -> { module &
+                        mems: List.append module.mems { position, element: mem },
+                    }
+
+            _ -> Err [{ position: { row: 0, column: 0 }, message: "Unexpected child" }]
+# when memResult and currentResult are errors, merge the errors
+# when memResult is succes and currentResult is error, new errors list
+# when memResult is error and currentResult is success, new error list
+# when memResult is success and currentResult is success, merge with custom function
 
 transformMem : Transformer Mem
 transformMem = \children ->
-    Err [{ position: { row: 1, column: 1 }, message: "Not Implemented Yet" }]
+    when children is
+        [Term { position, term: Number number }] -> Ok { min: number }
+        [Term { position }, ..] -> Err [{ position, message: "Invalid memory" }]
+        [SExpression { position }, ..] -> Err [{ position, message: "Invalid memory" }]
+        [] -> crash "transformMem is never called with an empty children"
+        _ -> crash "Impossible match arm in transformMem" # shouldn't be necessary?
+
+mergeResult : TransformResult a, TransformResult b, (a, b -> a) -> TransformResult a
+mergeResult = \originalResult, nextResult, mapper ->
+
+    when (originalResult, nextResult) is
+        (Ok original, Ok next) ->
+            Ok (mapper original next)
+
+        (Err errors, Ok _) ->
+            Err errors
+
+        (Ok _, Err errors) ->
+            Err errors
+
+        (Err originalErrors, Err nextErrors) ->
+            Err (List.concat originalErrors nextErrors)
+
+mergeError : TransformResult a, Common.Error -> TransformResult a
+mergeError = \originalResult, error ->
+    when originalResult is
+        Ok _ ->
+            errors = [error]
+            Err errors
+
+        Err errors -> Err (List.append errors error)
 
 expect
     # (module)
@@ -85,7 +128,7 @@ expect
     }
 
 expect
-    # (module (memory 1))
+    # (module (memory 10))
     result = transform
         (
             SExpression {
@@ -97,7 +140,12 @@ expect
                         position: { column: 8, row: 1 },
                         name: "memory",
                         state: Closed,
-                        children: [Term { position: { column: 17, row: 1 }, term: Number 10 }],
+                        children: [
+                            Term {
+                                position: { column: 17, row: 1 },
+                                term: Number 10,
+                            },
+                        ],
                     },
                 ],
             }
@@ -108,12 +156,100 @@ expect
         position: { row: 1, column: 1 },
         element: {
             funcs: [],
-            mems: [],
+            mems: [
+                {
+                    position: { row: 1, column: 8 },
+                    element: { min: 10u32 },
+                },
+            ],
             datas: [],
             imports: [],
             exports: [],
         },
     }
+
+expect
+    # (module (memory))
+    result = transform
+        (
+            SExpression {
+                position: { column: 1, row: 1 },
+                name: "module",
+                state: Closed,
+                children: [
+                    SExpression {
+                        position: { column: 8, row: 1 },
+                        name: "memory",
+                        state: Closed,
+                        children: [],
+                    },
+                ],
+            }
+        )
+
+    result
+    == Err [{ message: "Invalid memory: min limit required", position: { column: 8, row: 1 } }]
+
+expect
+    # (module (memory "ten"))
+    result = transform
+        (
+            SExpression {
+                position: { column: 1, row: 1 },
+                name: "module",
+                state: Closed,
+                children: [
+                    SExpression {
+                        position: { column: 8, row: 1 },
+                        name: "memory",
+                        state: Closed,
+                        children: [
+                            Term {
+                                position: { column: 17, row: 1 },
+                                term: String "10",
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
+
+    result
+    == Err [{ message: "Invalid memory", position: { column: 17, row: 1 } }]
+
+expect
+    # (module (memory (something 10)))
+    result = transform
+        (
+            SExpression {
+                position: { column: 1, row: 1 },
+                name: "module",
+                state: Closed,
+                children: [
+                    SExpression {
+                        position: { column: 8, row: 1 },
+                        name: "memory",
+                        state: Closed,
+                        children: [
+                            SExpression {
+                                position: { column: 17, row: 1 },
+                                name: "something",
+                                state: Closed,
+                                children: [
+                                    Term {
+                                        position: { column: 28, row: 1 },
+                                        term: Number 10,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
+
+    result
+    == Err [{ message: "Invalid memory", position: { column: 17, row: 1 } }]
 
 expect
     # (memory)
