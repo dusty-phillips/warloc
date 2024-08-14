@@ -11,6 +11,7 @@ import pf.Stderr
 import Tokenizer
 import Parser
 import Transformer
+import Generator
 import Common
 
 compile : Str -> Result (List U8) (List Common.Error)
@@ -19,10 +20,7 @@ compile = \input ->
     |> Tokenizer.tokenize
     |> Result.try Parser.parse
     |> Result.try Transformer.transform
-    |> Result.map \ast ->
-        # dbg expression
-
-        Str.toUtf8 "TODO: Compile Input"
+    |> Result.try Generator.generate
 
 writeWithWasmExtension : List U8, Str -> Task.Task {} [Exit I32 Str]
 writeWithWasmExtension = \bytes, inputFilename ->
