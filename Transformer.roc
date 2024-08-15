@@ -6,6 +6,7 @@ module [
     Instruction,
     Type,
     FuncType,
+    Import,
 ]
 
 import Common
@@ -141,7 +142,8 @@ transformModule = \children ->
                 mergeError currentResult { position, message: "Invalid func: identifier required" }
 
             SExpression { position, name: "func", children: expressions } ->
-                mergeResult currentResult (transformFunc expressions) \module, func -> { module &
+                mergeResult currentResult (transformFunc expressions) \module, (func, funcType) -> { module &
+                        types: List.append module.types { position, element: funcType },
                         funcs: List.append module.funcs { position, element: func },
                     }
 
@@ -212,18 +214,32 @@ transformImport = \children ->
 
         _ -> Err [{ position: { row: 0, column: 0 }, message: "Unexpected import encountered" }]
 
-transformFunc : Transformer Func
+transformFunc : Transformer (Func, FuncType)
 transformFunc = \children ->
     when children is
-        [Term { term: Variable identifier }, .. as funcInstructions] ->
+        [Term { term: Variable identifier }, .. as funcInstructions] if !(containsParamsOrResult funcInstructions) ->
             funcInstructions
             |> transformInstructions
-            |> Result.map \instructions -> {
-                identifier,
-                instructions,
-            }
+            |> Result.map \instructions -> (
+                    {
+                        identifier,
+                        instructions,
+                    },
+                    {
+                        identifier,
+                        param: [],
+                        result: [],
+                    },
+                )
 
         _ -> Err [{ position: { row: 0, column: 0 }, message: "Unexpected Instruction" }]
+
+containsParamsOrResult : List Parser.Expression -> Bool
+containsParamsOrResult = \children ->
+    List.any children \child ->
+        when child is
+            SExpression { name: "param" } | SExpression { name: "result" } -> Bool.true
+            _ -> Bool.false
 
 transformInstructions : Transformer (List Instruction)
 transformInstructions = \children ->
@@ -840,7 +856,16 @@ expect
             ],
             imports: [],
             mems: [],
-            types: [],
+            types: [
+                {
+                    position: { column: 3, row: 2 },
+                    element: {
+                        identifier: "myfunc",
+                        param: [],
+                        result: [],
+                    },
+                },
+            ],
         },
         position: { column: 1, row: 1 },
     }
