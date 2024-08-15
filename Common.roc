@@ -1,4 +1,4 @@
-module [Position, Positionable, Error, formatErrors]
+module [Position, Positionable, Error, formatErrors, extractElement]
 
 Position : {
     row : U32,
@@ -26,3 +26,6 @@ formatErrors = \errors ->
                 "$(row):$(column) $(error.message)"
         )
         "\n"
+
+extractElement : Positionable a -> a
+extractElement = \positionable -> positionable.element

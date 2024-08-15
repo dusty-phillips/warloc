@@ -1,6 +1,11 @@
 module [
     transform,
     Module,
+    Mem,
+    Data,
+    Instruction,
+    Type,
+    FuncType,
 ]
 
 import Common

@@ -20,7 +20,7 @@ compile = \input ->
     |> Tokenizer.tokenize
     |> Result.try Parser.parse
     |> Result.try Transformer.transform
-    |> Result.try Generator.generate
+    |> Result.map Generator.generate
 
 writeWithWasmExtension : List U8, Str -> Task.Task {} [Exit I32 Str]
 writeWithWasmExtension = \bytes, inputFilename ->
