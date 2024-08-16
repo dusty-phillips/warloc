@@ -5,82 +5,76 @@ module [
 import Transformer
 import Common
 
+TypeDict : Dict Str U32
+
 generate : Common.Positionable Transformer.Module -> List U8
 generate = \modulePositioned ->
     module = modulePositioned |> Common.extractElement
+    typeDict = typesToDict module.types
 
     [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]
-    |> concatSection 0x01 module.types generateFuncType
-    |> concatSection 0x02 module.imports (generateImportFactory module.types)
-    |> concatSection 0x03 module.funcs (generateFuncFactory module.types)
-    |> concatSection 0x05 module.mems generateMem
-    |> concatSection 0x0a module.funcs generateCode
-    |> concatSection 0x0b module.datas generateData
+    |> concatSection 0x01 typeDict module.types generateFuncType
+    |> concatSection 0x02 typeDict module.imports generateImport
+    |> concatSection 0x03 typeDict module.funcs generateFunc
+    |> concatSection 0x05 typeDict module.mems generateMem
+    |> concatSection 0x0a typeDict module.funcs generateCode
+    |> concatSection 0x0b typeDict module.datas generateData
 
-concatSection : List U8, U8, List (Common.Positionable x), (x -> List U8) -> List U8
-concatSection = \existingBytes, sectionId, items, generateOne ->
+concatSection : List U8, U8, TypeDict, List (Common.Positionable x), (TypeDict, x -> List U8) -> List U8
+concatSection = \existingBytes, sectionId, typeDict, items, generateOne ->
     sectionBytes =
         items
         |> List.map Common.extractElement
-        |> generateSection sectionId generateOne
+        |> generateSection sectionId typeDict generateOne
 
     List.concat existingBytes sectionBytes
 
-generateSection : List a, U8, (a -> List U8) -> List U8
-generateSection = \items, sectionId, generateOne ->
+generateSection : List a, U8, TypeDict, (TypeDict, a -> List U8) -> List U8
+generateSection = \items, sectionId, typeDict, generateOne ->
     when items is
         [] -> []
         _ ->
-            section = generateVector items generateOne
+            section = generateVector items typeDict generateOne
 
             []
             |> List.append sectionId
             |> List.concat (section |> List.len |> Num.toU32 |> generateU32)
             |> List.concat section
 
-generateImportFactory : List (Common.Positionable Transformer.FuncType) -> (Transformer.Import -> List U8)
-generateImportFactory = \funcTypes ->
-    typeDict = typesToDict funcTypes
+generateImport : TypeDict, Transformer.Import -> List U8
+generateImport = \typeDict, importDef ->
+    when importDef.definition is
+        Func identifier if Dict.contains typeDict identifier ->
+            []
+            |> List.concat (generateVector (Str.toUtf8 importDef.namespace) typeDict \_, b -> [b])
+            |> List.concat (generateVector (Str.toUtf8 importDef.name) typeDict \_, b -> [b])
+            |> List.append 0x00
+            |> List.concat (generateU32 ((Dict.get typeDict identifier) |> Result.withDefault 999999))
 
-    \importDef ->
-        when importDef.definition is
-            Func identifier if Dict.contains typeDict identifier ->
-                []
-                |> List.concat (generateVector (Str.toUtf8 importDef.namespace) \b -> [b])
-                |> List.concat (generateVector (Str.toUtf8 importDef.name) \b -> [b])
-                |> List.append 0x00
-                |> List.concat (generateU32 ((Dict.get typeDict identifier) |> Result.withDefault 999999))
+        Func _ ->
+            crash "Unexpected identifier shouldn't get past AST generation"
 
-            Func _ ->
-                crash "Unexpected identifier shouldn't get past AST generation"
+generateFunc : TypeDict, Transformer.Func -> List U8
+generateFunc = \typeDict, func ->
+    when func.identifier is
+        identifier if Dict.contains typeDict identifier ->
+            typeDict
+            |> Dict.get func.identifier
+            |> Result.withDefault 999999
+            |> generateU32
 
-            _ ->
-                crash "Haven't implemented non func imports"
+        _ ->
+            crash "Unexpected identifier shouldn't get past AST generation"
 
-generateFuncFactory : List (Common.Positionable Transformer.FuncType) -> (Transformer.Func -> List U8)
-generateFuncFactory = \funcTypes ->
-    typeDict = typesToDict funcTypes
-
-    \func ->
-        when func.identifier is
-            identifier if Dict.contains typeDict identifier ->
-                typeDict
-                |> Dict.get func.identifier
-                |> Result.withDefault 999999
-                |> generateU32
-
-            _ ->
-                crash "Unexpected identifier shouldn't get past AST generation"
-
-generateMem : Transformer.Mem -> List U8
-generateMem = \mem ->
+generateMem : TypeDict, Transformer.Mem -> List U8
+generateMem = \_, mem ->
     List.concat [0x00] (generateU32 mem.min)
 
-generateCode : Transformer.Func -> List U8
-generateCode = \func ->
+generateCode : TypeDict, Transformer.Func -> List U8
+generateCode = \typeDict, func ->
     bytes =
         [0x00] # hardcoding the locals to be empty for now
-        |> List.concat (generateExpression func.instructions)
+        |> List.concat (generateExpression typeDict func.instructions)
 
     bytes
     |> List.len
@@ -88,11 +82,11 @@ generateCode = \func ->
     |> generateU32
     |> List.concat bytes
 
-generateData : Transformer.Data -> List U8
-generateData = \data ->
+generateData : TypeDict, Transformer.Data -> List U8
+generateData = \typeDict, data ->
     [0x00]
-    |> List.concat (generateExpression data.offset)
-    |> List.concat (generateVector (Str.toUtf8 data.bytes) \b -> [b])
+    |> List.concat (generateExpression typeDict data.offset)
+    |> List.concat (generateVector (Str.toUtf8 data.bytes) typeDict \_, b -> [b])
 
 generateInstruction : Transformer.Instruction -> List U8
 generateInstruction = \instruction ->
@@ -102,8 +96,8 @@ generateInstruction = \instruction ->
         Drop {} -> [0x1a]
         _ -> crash "unexpected instruction encountered"
 
-generateExpression : List Transformer.Instruction -> List U8
-generateExpression = \instructions ->
+generateExpression : TypeDict, List Transformer.Instruction -> List U8
+generateExpression = \_, instructions ->
     instructions
     |> List.walk
         []
@@ -126,24 +120,24 @@ generateU32Recurse = \currentItems, remainingBits ->
     else
         generateU32Recurse (List.append currentItems (Num.toU8 (Num.bitwiseOr leastSignificantByte 0x80))) nextBits
 
-generateVector : List a, (a -> List U8) -> List U8
-generateVector = \items, encodeOne ->
+generateVector : List a, Dict Str U32, (Dict Str U32, a -> List U8) -> List U8
+generateVector = \items, typeDict, encodeOne ->
     result = items |> List.len |> Num.toU32 |> generateU32
     items
     |> List.walk result \current, next ->
-        List.concat current (encodeOne next)
+        List.concat current (encodeOne typeDict next)
 
-generateType : Transformer.Type -> List U8
-generateType = \type ->
+generateType : TypeDict, Transformer.Type -> List U8
+generateType = \_, type ->
     when type is
         I32 -> [0x7f]
 
-generateFuncType : Transformer.FuncType -> List U8
-generateFuncType = \funcType ->
+generateFuncType : TypeDict, Transformer.FuncType -> List U8
+generateFuncType = \typeDict, funcType ->
     []
     |> List.append 0x60
-    |> List.concat (generateVector (funcType.param |> List.map Common.extractElement) generateType)
-    |> List.concat (generateVector (funcType.result |> List.map Common.extractElement) generateType)
+    |> List.concat (generateVector (funcType.param |> List.map Common.extractElement) typeDict generateType)
+    |> List.concat (generateVector (funcType.result |> List.map Common.extractElement) typeDict generateType)
 
 typesToDict : List (Common.Positionable Transformer.FuncType) -> Dict Str U32
 typesToDict = \funcTypes ->
@@ -513,15 +507,15 @@ expect
     result == [0xc0, 0xc4, 0x7]
 
 expect
-    result = generateVector [624485, 3, 0, 123456] generateU32
+    result = generateVector [624485, 3, 0, 123456] (typesToDict []) \_, num -> generateU32 num
     result == [0x04, 0xE5, 0x8E, 0x26, 0x03, 0x00, 0xc0, 0xc4, 0x7]
 
 expect
-    result = generateMem { min: 1 }
+    result = generateMem (typesToDict []) { min: 1 }
     result == [0x00, 0x01]
 
 expect
-    result = generateData {
+    result = generateData (typesToDict []) {
         offset: [
             I32Const {
                 position: { row: 1, column: 1 },
@@ -549,11 +543,11 @@ expect
     result == [0x36, 0x02, 0x00]
 
 expect
-    result = generateType I32
+    result = generateType (typesToDict []) I32
     result == [0x7f]
 
 expect
-    result = generateFuncType {
+    result = generateFuncType (typesToDict []) {
         identifier: "helloFunc",
         param: [
             { element: I32, position: { row: 1, column: 1 } },
