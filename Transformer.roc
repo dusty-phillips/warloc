@@ -5,6 +5,7 @@ module [
     Data,
     Instruction,
     Type,
+    Func,
     FuncType,
     Import,
 ]
