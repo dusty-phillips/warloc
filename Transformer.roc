@@ -8,6 +8,7 @@ module [
     Func,
     FuncType,
     Import,
+    Export,
 ]
 
 import Common

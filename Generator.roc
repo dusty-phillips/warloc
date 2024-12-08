@@ -17,6 +17,7 @@ generate = \modulePositioned ->
     |> concatSection 0x02 typeDict module.imports generateImport
     |> concatSection 0x03 typeDict module.funcs generateFunc
     |> concatSection 0x05 typeDict module.mems generateMem
+    |> concatSection 0x07 typeDict module.exports generateExport
     |> concatSection 0x0a typeDict module.funcs generateCode
     |> concatSection 0x0b typeDict module.datas generateData
 
@@ -70,6 +71,20 @@ generateMem : TypeDict, Transformer.Mem -> List U8
 generateMem = \_, mem ->
     List.concat [0x00] (generateU32 mem.min)
 
+generateExport : TypeDict, Transformer.Export -> List U8
+generateExport = \typeDict, export ->
+    name = generateVector (Str.toUtf8 export.name) typeDict \_, b -> [b]
+    typeAndIndex =
+        when export.type is
+            Mem memIndex -> List.concat [0x02] (memIndex |> generateU32)
+            Func funcId ->
+                funcIndex =
+                    when (typeDict |> Dict.get funcId) is
+                        Err KeyNotFound -> crash "export Func identifier must always be in functions table"
+                        Ok index -> index
+                List.concat [0x00] (funcIndex |> generateU32)
+    List.concat name typeAndIndex
+
 generateCode : TypeDict, Transformer.Func -> List U8
 generateCode = \typeDict, func ->
     bytes =
@@ -88,21 +103,24 @@ generateData = \typeDict, data ->
     |> List.concat (generateExpression typeDict data.offset)
     |> List.concat (generateVector (Str.toUtf8 data.bytes) typeDict \_, b -> [b])
 
-generateInstruction : Transformer.Instruction -> List U8
-generateInstruction = \instruction ->
+generateInstruction : TypeDict, Transformer.Instruction -> List U8
+generateInstruction = \typeDict, instruction ->
     when instruction is
         I32Const { element } -> List.concat [0x41] (element |> generateU32)
         I32Store {} -> [0x36, 0x02, 0x00]
         Drop {} -> [0x1a]
-        _ -> crash "unexpected instruction encountered"
+        Call { element: { identifier } } ->
+            when Dict.get typeDict identifier is
+                Err _ -> crash "Should not receive call instruction with invalid identifier"
+                Ok num -> num |> generateU32 |> List.prepend 0x10
 
 generateExpression : TypeDict, List Transformer.Instruction -> List U8
-generateExpression = \_, instructions ->
+generateExpression = \typeDict, instructions ->
     instructions
     |> List.walk
         []
         (\state, next ->
-            List.concat state (generateInstruction next)
+            List.concat state (generateInstruction typeDict next)
         )
     |> List.append 0x0b
 
@@ -399,6 +417,175 @@ expect
 
 expect
     # (module
+    #     (import "wasi_snapshot_preview1" "fd_write" (
+    #         func $fd_write (param i32 i32 i32 i32) (result i32))
+    #     )
+    #     (func $main
+    #         (i32.const 1)
+    #         (i32.const 0)
+    #         (i32.const 1)
+    #         (i32.const 20)
+    #         (call $fd_write)
+    #         (drop)
+    #     )
+    # )
+    result = generate {
+        position: { row: 1, column: 1 },
+        element: {
+            types: [
+                {
+                    position: { row: 3, column: 48 },
+                    element: {
+                        identifier: "fd_write",
+                        param: [
+                            { element: I32, position: { row: 3, column: 30 } },
+                            { element: I32, position: { row: 3, column: 34 } },
+                            { element: I32, position: { row: 3, column: 38 } },
+                            { element: I32, position: { row: 3, column: 42 } },
+                        ],
+                        result: [{ element: I32, position: { row: 3, column: 55 } }],
+                    },
+                },
+                {
+                    position: { row: 2, column: 4 },
+                    element: {
+                        identifier: "main",
+                        param: [],
+                        result: [],
+                    },
+                },
+            ],
+            funcs: [
+                {
+                    position: { row: 2, column: 4 },
+                    element: {
+                        identifier: "main",
+                        instructions: [
+                            I32Const {
+                                position: { row: 3, column: 8 },
+                                element: 1,
+                            },
+                            I32Const {
+                                position: { row: 4, column: 8 },
+                                element: 0,
+                            },
+                            I32Const {
+                                position: { row: 3, column: 8 },
+                                element: 1,
+                            },
+                            I32Const {
+                                position: { row: 4, column: 8 },
+                                element: 20,
+                            },
+                            Call {
+                                position: { row: 5, column: 8 },
+                                element: { identifier: "fd_write" },
+                            },
+                        ],
+                    },
+                },
+            ],
+            mems: [],
+            datas: [],
+            imports: [
+                {
+                    position: { row: 2, column: 4 },
+                    element: {
+                        namespace: "wasi_snapshot_preview1",
+                        name: "fd_write",
+                        definition: Func "fd_write",
+                    },
+                },
+            ],
+            exports: [],
+        },
+    }
+
+    result
+    == [
+        0x00,
+        0x61,
+        0x73,
+        0x6d,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x01, # type section 1
+        0x0c,
+        0x02,
+        0x60, # function 0 (fd_write)
+        0x04,
+        0x7f,
+        0x7f,
+        0x7f,
+        0x7f,
+        0x01,
+        0x7f,
+        0x60, # function 1 (main)
+        0x00,
+        0x00,
+        0x02, # import section 2
+        0x23,
+        0x01, # One import
+        0x16, # namespace length
+        0x77,
+        0x61,
+        0x73,
+        0x69,
+        0x5f,
+        0x73,
+        0x6e,
+        0x61,
+        0x70,
+        0x73,
+        0x68,
+        0x6f,
+        0x74,
+        0x5f,
+        0x70,
+        0x72,
+        0x65,
+        0x76,
+        0x69,
+        0x65,
+        0x77,
+        0x31,
+        0x08, # name length
+        0x66,
+        0x64,
+        0x5f,
+        0x77,
+        0x72,
+        0x69,
+        0x74,
+        0x65,
+        0x00, # Func type
+        0x00, # Func index
+        0x03, # func section
+        0x02,
+        0x01,
+        0x01, # main is at index 1 in typeindex
+        0x0a, # code section
+        0x0e, # 14 bytes
+        0x01, # 1 function
+        0x0c, # 12 bytes in this function
+        0x00, # 0 local blocks
+        0x41, # i32_const
+        0x01,
+        0x41, # i32_const
+        0x00,
+        0x41, # i32_const
+        0x01,
+        0x41, # i32_const
+        0x14,
+        0x10, # call
+        0x00, # fd_write is at index 0 in types table
+        0x0b,
+    ]
+
+expect
+    # (module
     #    (memory 1)
     # )
     result = generate {
@@ -529,6 +716,7 @@ expect
 
 expect
     result = generateInstruction
+        (typesToDict [])
         (
             I32Const {
                 position: { row: 1, column: 1 },
@@ -539,7 +727,7 @@ expect
     result == [0x41, 0x08]
 
 expect
-    result = generateInstruction (I32Store { row: 1, column: 1 })
+    result = generateInstruction (typesToDict []) (I32Store { row: 1, column: 1 })
     result == [0x36, 0x02, 0x00]
 
 expect
